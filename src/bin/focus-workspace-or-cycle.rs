@@ -1,5 +1,5 @@
 use niri_ipc::socket::Socket;
-use niri_ipc::{Action, Request, Response, WorkspaceReferenceArg};
+use niri_ipc::{Action, Request, Response, Window, WorkspaceReferenceArg};
 use std::env;
 use std::ffi::OsString;
 use std::process::ExitCode;
@@ -35,6 +35,34 @@ fn ask(socket: &mut Socket, req: Request) -> Result<Response, String> {
         .send(req)
         .map_err(|error| format!("failed to communicate with niri: {error}"))?
         .map_err(|error| format!("niri returned an error: {error}"))
+}
+
+fn next_window(windows: &[Window], workspace_id: u64, prev: bool) -> Option<u64> {
+    let mut tiled: Vec<_> = windows
+        .iter()
+        .filter(|window| window.workspace_id == Some(workspace_id) && !window.is_floating)
+        .filter_map(|window| {
+            window
+                .layout
+                .pos_in_scrolling_layout
+                .map(|position| (position, window))
+        })
+        .collect();
+    tiled.sort_unstable_by_key(|(position, _)| *position);
+
+    if tiled.is_empty() {
+        return None;
+    }
+
+    let current = tiled.iter().position(|(_, window)| window.is_focused);
+    let next = match current {
+        Some(_) if tiled.len() == 1 => return None,
+        Some(index) if prev => (index + tiled.len() - 1) % tiled.len(),
+        Some(index) => (index + 1) % tiled.len(),
+        None if prev => tiled.len() - 1,
+        None => 0,
+    };
+    Some(tiled[next].1.id)
 }
 
 fn main() -> ExitCode {
@@ -77,43 +105,24 @@ fn run(target: u8, prev: bool) -> Result<(), String> {
         .iter()
         .find(|w| w.idx == target)
         .ok_or_else(|| format!("workspace {target} not found"))?;
-    let focused_ws = workspaces.iter().find(|w| w.is_focused);
-
     // Not on the target workspace yet — just switch, don't touch windows.
-    if focused_ws.map(|w| w.id) != Some(target_ws.id) {
+    if !target_ws.is_focused {
         ask(
             &mut socket,
             Request::Action(Action::FocusWorkspace {
-                reference: WorkspaceReferenceArg::Index(target),
+                reference: WorkspaceReferenceArg::Id(target_ws.id),
             }),
         )?;
         return Ok(());
     }
 
     // Already there — cycle windows within the workspace.
-    let Response::Windows(mut windows) = ask(&mut socket, Request::Windows)? else {
+    let Response::Windows(windows) = ask(&mut socket, Request::Windows)? else {
         return Err("niri returned an unexpected response to Windows".into());
     };
-    windows.retain(|w| w.workspace_id == Some(target_ws.id));
-    windows.sort_by_key(|w| w.id);
-
-    if windows.len() <= 1 {
-        return Ok(());
+    if let Some(id) = next_window(&windows, target_ws.id, prev) {
+        ask(&mut socket, Request::Action(Action::FocusWindow { id }))?;
     }
-
-    let cur = windows.iter().position(|w| w.is_focused).unwrap_or(0);
-    let next = if prev {
-        (cur + windows.len() - 1) % windows.len()
-    } else {
-        (cur + 1) % windows.len()
-    };
-
-    ask(
-        &mut socket,
-        Request::Action(Action::FocusWindow {
-            id: windows[next].id,
-        }),
-    )?;
 
     Ok(())
 }
@@ -121,6 +130,7 @@ fn run(target: u8, prev: bool) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use niri_ipc::WindowLayout;
     use std::os::unix::ffi::OsStringExt;
 
     #[test]
@@ -168,5 +178,94 @@ mod tests {
         let invalid = OsString::from_vec(vec![0xff]);
         assert!(parse_args(std::slice::from_ref(&invalid)).is_err());
         assert!(parse_args(&["1".into(), invalid]).is_err());
+    }
+
+    fn window(id: u64, position: (usize, usize), focused: bool) -> Window {
+        Window {
+            id,
+            title: None,
+            app_id: None,
+            pid: None,
+            workspace_id: Some(10),
+            is_focused: focused,
+            is_floating: false,
+            is_urgent: false,
+            layout: WindowLayout {
+                pos_in_scrolling_layout: Some(position),
+                tile_size: (100.0, 100.0),
+                window_size: (100, 100),
+                tile_pos_in_workspace_view: None,
+                window_offset_in_tile: (0.0, 0.0),
+            },
+            focus_timestamp: None,
+        }
+    }
+
+    #[test]
+    fn cycles_in_spatial_order_in_both_directions() {
+        // Neither IDs nor IPC order match the layout: left column, then right.
+        let windows = [
+            window(5, (2, 1), false),
+            window(80, (1, 2), false),
+            window(30, (1, 1), false),
+        ];
+        for (focused, forward, backward) in [(30, 80, 5), (80, 5, 30), (5, 30, 80)] {
+            let mut windows = windows.clone();
+            for window in &mut windows {
+                window.is_focused = window.id == focused;
+            }
+            assert_eq!(next_window(&windows, 10, false), Some(forward));
+            assert_eq!(next_window(&windows, 10, true), Some(backward));
+        }
+    }
+
+    #[test]
+    fn ignores_floating_and_unpositioned_windows_and_other_workspaces() {
+        let mut floating = window(2, (1, 2), false);
+        floating.is_floating = true;
+        let mut other_workspace = window(3, (1, 3), false);
+        other_workspace.workspace_id = Some(20);
+        let mut no_workspace = window(4, (1, 4), false);
+        no_workspace.workspace_id = None;
+        let mut no_position = window(5, (1, 5), false);
+        no_position.layout.pos_in_scrolling_layout = None;
+        let windows = [
+            window(1, (1, 1), true),
+            floating,
+            other_workspace,
+            no_workspace,
+            no_position,
+            window(6, (2, 1), false),
+        ];
+        assert_eq!(next_window(&windows, 10, false), Some(6));
+        assert_eq!(next_window(&windows, 10, true), Some(6));
+    }
+
+    #[test]
+    fn enters_the_layout_from_either_end_without_a_focused_tiled_window() {
+        let mut floating = window(2, (1, 2), true);
+        floating.is_floating = true;
+        for floating_focused in [false, true] {
+            floating.is_focused = floating_focused;
+            let windows = [
+                window(1, (1, 1), false),
+                floating.clone(),
+                window(3, (2, 1), false),
+            ];
+            assert_eq!(next_window(&windows, 10, false), Some(1));
+            assert_eq!(next_window(&windows, 10, true), Some(3));
+        }
+    }
+
+    #[test]
+    fn handles_empty_and_single_window_layouts() {
+        let mut floating = window(2, (1, 1), true);
+        floating.is_floating = true;
+        for prev in [false, true] {
+            assert_eq!(next_window(&[], 10, prev), None);
+            assert_eq!(next_window(std::slice::from_ref(&floating), 10, prev), None);
+            assert_eq!(next_window(&[window(1, (1, 1), true)], 10, prev), None);
+            assert_eq!(next_window(&[window(1, (1, 1), false)], 10, prev), Some(1));
+        }
     }
 }

@@ -8,6 +8,12 @@ Small utilities for [niri](https://github.com/YaLTeR/niri).
 
 Focus a workspace by index. If already focused, cycle windows within it instead.
 
+Windows are visited from left to right, and from top to bottom within each
+column, wrapping at either end. Floating windows and windows without a
+scrolling-layout position are skipped. If no eligible window is focused,
+forward cycling selects the first window and `prev` selects the last.
+An empty layout or an already focused single window is left alone.
+
 ```
 focus-workspace-or-cycle <index> [prev]
 ```
