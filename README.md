@@ -29,6 +29,11 @@ binds {
 }
 ```
 
+## Known issues
+
+- Multiple monitors are not supported: workspace indices are local to each
+  monitor, but the utility currently looks up an index across all monitors.
+
 ## TODO
 
 - `focus-workspace-or-cycle`: support named workspaces (currently index-only)
