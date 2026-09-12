@@ -56,16 +56,26 @@ Or via Nix:
 nix build
 ```
 
-For a local trial, keep the build available through a Nix GC root:
+## Install with Nix
 
-```sh
-mkdir -p "$HOME/.local/share"
-nix build --out-link "$HOME/.local/share/niri-toolbelt"
+Add the flake as an input to your system configuration:
+
+```nix
+inputs.niri-toolbelt.url = "github:anton-rudeshko/niri-toolbelt";
+inputs.niri-toolbelt.inputs.nixpkgs.follows = "nixpkgs";
 ```
 
-Use the absolute path to `.local/share/niri-toolbelt/bin/focus-workspace-or-cycle`
-in your niri `spawn` bindings. Re-run the build command to update the trial
-version. The build link keeps the package from being garbage-collected.
+Then add the package to a Home Manager module that has access to `inputs`:
+
+```nix
+home.packages = [
+  inputs.niri-toolbelt.packages.${pkgs.stdenv.hostPlatform.system}.default
+];
+```
+
+After activating the configuration, use the command name in niri bindings as
+shown above. The standalone flake uses `nixos-26.05`; `follows` reuses the
+consumer's nixpkgs instead. Currently the flake supports `x86_64-linux`.
 
 ## Checks
 
