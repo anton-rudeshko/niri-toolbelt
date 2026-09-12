@@ -33,3 +33,9 @@ binds {
 ```sh
 cargo build --release
 ```
+
+Or via Nix:
+
+```sh
+nix build
+```
