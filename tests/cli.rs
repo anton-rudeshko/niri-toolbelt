@@ -38,3 +38,28 @@ fn invalid_arguments_exit_before_connecting() {
         assert!(!stderr.contains("NIRI_SOCKET"));
     }
 }
+
+#[test]
+fn missing_socket_reports_a_runtime_error() {
+    for args in [vec!["1"], vec!["1", "prev"]] {
+        let output = command().args(args).output().unwrap();
+        assert_eq!(output.status.code(), Some(1));
+        assert!(output.stdout.is_empty());
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        assert!(stderr.starts_with("error: failed to connect to niri:"));
+        assert!(stderr.contains("NIRI_SOCKET is not set"));
+        assert!(!stderr.contains("panicked"));
+        assert!(!stderr.contains("Usage:"));
+    }
+}
+
+#[test]
+fn invalid_socket_path_reports_a_runtime_error() {
+    let output = command().arg("1").env("NIRI_SOCKET", "").output().unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.starts_with("error: failed to connect to niri:"));
+    assert!(!stderr.contains("panicked"));
+    assert!(!stderr.contains("Usage:"));
+}

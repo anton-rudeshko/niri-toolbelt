@@ -14,7 +14,8 @@ focus-workspace-or-cycle <index> [prev]
 
 `index` must be an integer from 1 to 255. The only optional argument is `prev`.
 Run `focus-workspace-or-cycle --help` (or `-h`) for help without connecting to niri.
-Invalid arguments exit with status 2; help exits with status 0.
+Exit status is 0 for success or help, 2 for invalid arguments, and 1 for runtime
+errors (for example, when niri is unavailable or the workspace does not exist).
 
 Useful as a single keybind that both switches to a workspace and lets you
 cycle through its windows without a separate binding.

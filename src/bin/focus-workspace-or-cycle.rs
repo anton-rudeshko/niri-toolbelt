@@ -30,11 +30,11 @@ fn parse_args(args: &[OsString]) -> Result<Cli, &'static str> {
     Ok(Cli::Run { target, prev })
 }
 
-fn ask(socket: &mut Socket, req: Request) -> Response {
+fn ask(socket: &mut Socket, req: Request) -> Result<Response, String> {
     socket
         .send(req)
-        .expect("failed to talk to niri socket")
-        .expect("niri returned an error")
+        .map_err(|error| format!("failed to communicate with niri: {error}"))?
+        .map_err(|error| format!("niri returned an error: {error}"))
 }
 
 fn main() -> ExitCode {
@@ -56,19 +56,27 @@ fn main() -> ExitCode {
         }
     };
 
-    let mut socket = Socket::connect().expect("niri not running / no NIRI_SOCKET");
+    match run(target, prev) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("error: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
 
-    let Response::Workspaces(workspaces) = ask(&mut socket, Request::Workspaces) else {
-        unreachable!()
+fn run(target: u8, prev: bool) -> Result<(), String> {
+    let mut socket =
+        Socket::connect().map_err(|error| format!("failed to connect to niri: {error}"))?;
+
+    let Response::Workspaces(workspaces) = ask(&mut socket, Request::Workspaces)? else {
+        return Err("niri returned an unexpected response to Workspaces".into());
     };
 
     let target_ws = workspaces
         .iter()
         .find(|w| w.idx == target)
-        .unwrap_or_else(|| {
-            eprintln!("workspace {target} not found");
-            std::process::exit(1)
-        });
+        .ok_or_else(|| format!("workspace {target} not found"))?;
     let focused_ws = workspaces.iter().find(|w| w.is_focused);
 
     // Not on the target workspace yet — just switch, don't touch windows.
@@ -78,19 +86,19 @@ fn main() -> ExitCode {
             Request::Action(Action::FocusWorkspace {
                 reference: WorkspaceReferenceArg::Index(target),
             }),
-        );
-        return ExitCode::SUCCESS;
+        )?;
+        return Ok(());
     }
 
     // Already there — cycle windows within the workspace.
-    let Response::Windows(mut windows) = ask(&mut socket, Request::Windows) else {
-        unreachable!()
+    let Response::Windows(mut windows) = ask(&mut socket, Request::Windows)? else {
+        return Err("niri returned an unexpected response to Windows".into());
     };
     windows.retain(|w| w.workspace_id == Some(target_ws.id));
     windows.sort_by_key(|w| w.id);
 
     if windows.len() <= 1 {
-        return ExitCode::SUCCESS;
+        return Ok(());
     }
 
     let cur = windows.iter().position(|w| w.is_focused).unwrap_or(0);
@@ -105,9 +113,9 @@ fn main() -> ExitCode {
         Request::Action(Action::FocusWindow {
             id: windows[next].id,
         }),
-    );
+    )?;
 
-    ExitCode::SUCCESS
+    Ok(())
 }
 
 #[cfg(test)]
