@@ -2,3 +2,6 @@
 name = "niri-toolbelt"
 version = "0.1.0"
 edition = "2021"
+
+[dependencies]
+niri-ipc = "26"
