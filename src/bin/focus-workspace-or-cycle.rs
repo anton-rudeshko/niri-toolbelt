@@ -37,6 +37,13 @@ fn ask(socket: &mut Socket, req: Request) -> Result<Response, String> {
         .map_err(|error| format!("niri returned an error: {error}"))
 }
 
+fn act(socket: &mut Socket, action: Action) -> Result<(), String> {
+    match ask(socket, Request::Action(action))? {
+        Response::Handled => Ok(()),
+        _ => Err("niri returned an unexpected response to Action".into()),
+    }
+}
+
 fn next_window(windows: &[Window], workspace_id: u64, prev: bool) -> Option<u64> {
     let mut tiled: Vec<_> = windows
         .iter()
@@ -107,11 +114,11 @@ fn run(target: u8, prev: bool) -> Result<(), String> {
         .ok_or_else(|| format!("workspace {target} not found"))?;
     // Not on the target workspace yet — just switch, don't touch windows.
     if !target_ws.is_focused {
-        ask(
+        act(
             &mut socket,
-            Request::Action(Action::FocusWorkspace {
+            Action::FocusWorkspace {
                 reference: WorkspaceReferenceArg::Id(target_ws.id),
-            }),
+            },
         )?;
         return Ok(());
     }
@@ -121,7 +128,7 @@ fn run(target: u8, prev: bool) -> Result<(), String> {
         return Err("niri returned an unexpected response to Windows".into());
     };
     if let Some(id) = next_window(&windows, target_ws.id, prev) {
-        ask(&mut socket, Request::Action(Action::FocusWindow { id }))?;
+        act(&mut socket, Action::FocusWindow { id })?;
     }
 
     Ok(())

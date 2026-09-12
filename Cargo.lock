@@ -29,6 +29,7 @@ name = "niri-toolbelt"
 version = "0.1.0"
 dependencies = [
  "niri-ipc",
+ "serde_json",
 ]
 
 [[package]]
