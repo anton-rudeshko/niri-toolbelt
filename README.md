@@ -55,3 +55,24 @@ Or via Nix:
 ```sh
 nix build
 ```
+
+For a local trial, keep the build available through a Nix GC root:
+
+```sh
+mkdir -p "$HOME/.local/share"
+nix build --out-link "$HOME/.local/share/niri-toolbelt"
+```
+
+Use the absolute path to `.local/share/niri-toolbelt/bin/focus-workspace-or-cycle`
+in your niri `spawn` bindings. Re-run the build command to update the trial
+version. The build link keeps the package from being garbage-collected.
+
+## Checks
+
+```sh
+nix develop --command cargo test --locked
+nix develop --command cargo clippy --all-targets --locked -- -D warnings
+nix develop --command cargo fmt --all -- --check
+```
+
+The tests use a local test socket and do not change the running niri session.
