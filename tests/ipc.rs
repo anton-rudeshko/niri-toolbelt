@@ -1,12 +1,17 @@
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, ErrorKind, Write};
+use std::net::Shutdown;
 use std::os::unix::net::UnixListener;
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
-fn exchange(args: &[&str], replies: Vec<String>) -> (Output, Vec<Value>) {
+fn exchange_with(
+    binary: &str,
+    args: &[&str],
+    replies: impl IntoIterator<Item = Option<String>>,
+) -> (Output, Vec<Value>) {
     static NEXT_SOCKET: AtomicUsize = AtomicUsize::new(0);
     let path = std::env::temp_dir().join(format!(
         "niri-toolbelt-{}-{}.sock",
@@ -15,6 +20,7 @@ fn exchange(args: &[&str], replies: Vec<String>) -> (Output, Vec<Value>) {
     ));
     let listener = UnixListener::bind(&path).unwrap();
     listener.set_nonblocking(true).unwrap();
+    let replies: Vec<_> = replies.into_iter().collect();
     let server = thread::spawn(move || {
         let deadline = Instant::now() + Duration::from_secs(5);
         let stream = loop {
@@ -27,6 +33,7 @@ fn exchange(args: &[&str], replies: Vec<String>) -> (Output, Vec<Value>) {
                 Err(error) => panic!("accept failed: {error}"),
             }
         };
+        drop(listener);
         stream
             .set_read_timeout(Some(Duration::from_secs(5)))
             .unwrap();
@@ -36,18 +43,43 @@ fn exchange(args: &[&str], replies: Vec<String>) -> (Output, Vec<Value>) {
             let mut line = String::new();
             assert!(stream.read_line(&mut line).unwrap() > 0);
             requests.push(serde_json::from_str(&line).unwrap());
-            writeln!(stream.get_mut(), "{reply}").unwrap();
+            if let Some(reply) = reply {
+                writeln!(stream.get_mut(), "{reply}").unwrap();
+            } else {
+                stream.get_mut().shutdown(Shutdown::Write).unwrap();
+            }
         }
+        let mut extra = String::new();
+        assert_eq!(
+            stream.read_line(&mut extra).unwrap(),
+            0,
+            "unexpected request: {extra}"
+        );
         requests
     });
-    let output = Command::new(env!("CARGO_BIN_EXE_focus-workspace-or-cycle"))
+    let output = Command::new(binary)
         .args(args)
         .env("NIRI_SOCKET", &path)
         .output()
         .unwrap();
-    let requests = server.join().unwrap();
+    let requests = server.join();
     std::fs::remove_file(path).unwrap();
-    (output, requests)
+    (output, requests.unwrap())
+}
+
+fn exchange(args: &[&str], replies: Vec<String>) -> (Output, Vec<Value>) {
+    exchange_with(
+        env!("CARGO_BIN_EXE_focus-workspace-or-cycle"),
+        args,
+        replies.into_iter().map(Some),
+    )
+}
+
+fn close_window(
+    args: &[&str],
+    replies: impl IntoIterator<Item = Option<String>>,
+) -> (Output, Vec<Value>) {
+    exchange_with(env!("CARGO_BIN_EXE_close-window-unless"), args, replies)
 }
 
 fn workspaces(focused: bool) -> Value {
@@ -174,10 +206,113 @@ fn reports_missing_workspaces_and_server_errors() {
 
 #[test]
 fn reports_invalid_json_and_a_closed_connection() {
-    let (output, _) = exchange(&["1"], vec!["not JSON".into()]);
-    assert_error(&output, "failed to communicate with niri");
-    let (output, _) = exchange(&["1"], vec![]);
-    assert_error(&output, "failed to communicate with niri");
+    for reply in [Some("not JSON".into()), None] {
+        let (output, requests) = exchange_with(
+            env!("CARGO_BIN_EXE_focus-workspace-or-cycle"),
+            &["1"],
+            [reply],
+        );
+        assert_error(&output, "failed to communicate with niri");
+        assert_eq!(requests, [json!("Workspaces")]);
+    }
+}
+
+fn focused_window(id: u64, app_id: Option<&str>) -> String {
+    let mut window = window(id, [1, 1], true, false);
+    window["app_id"] = json!(app_id);
+    json!({"Ok": {"FocusedWindow": window}}).to_string()
+}
+
+#[test]
+fn close_window_unless_keeps_matching_apps() {
+    for (args, app_id) in [
+        (&["other", "org.example.Editor"][..], "org.example.Editor"),
+        (&["dota2"][..], "dota2"),
+        (&["Редактор"][..], "Редактор"),
+        (&[""][..], ""),
+        (&["--", "--help"][..], "--help"),
+        (&["other", "--", "-app"][..], "-app"),
+    ] {
+        let (output, requests) = close_window(args, [Some(focused_window(42, Some(app_id)))]);
+        assert_success(&output);
+        assert_eq!(requests, [json!("FocusedWindow")]);
+    }
+}
+
+#[test]
+fn close_window_unless_succeeds_without_a_focused_window() {
+    let (output, requests) = close_window(
+        &["org.example.Editor"],
+        [Some(json!({"Ok": {"FocusedWindow": null}}).to_string())],
+    );
+    assert_success(&output);
+    assert_eq!(requests, [json!("FocusedWindow")]);
+}
+
+#[test]
+fn close_window_unless_targets_the_window_from_the_focus_snapshot() {
+    for (id, app_id) in [
+        (7, Some("org.example.Browser")),
+        (43, Some("dota2")),
+        (20, Some("org.example.editor")),
+        (42, Some("org.example.EditorPreview")),
+        (u64::from(u32::MAX) + 1, None),
+    ] {
+        let (output, requests) = close_window(
+            &["org.example.Editor", ""],
+            [
+                Some(focused_window(id, app_id)),
+                Some(json!({"Ok": "Handled"}).to_string()),
+            ],
+        );
+        assert_success(&output);
+        // An explicit ID keeps the action tied to the queried window if focus changes.
+        assert_eq!(
+            requests,
+            [
+                json!("FocusedWindow"),
+                json!({"Action": {"CloseWindow": {"id": id}}}),
+            ]
+        );
+    }
+}
+
+#[test]
+fn close_window_unless_reports_failed_focus_queries_and_close_actions() {
+    let args = ["org.example.Editor"];
+    for (query_reply, action_reply, message) in [
+        (
+            Some(json!({"Err": "test rejection"}).to_string()),
+            Some(json!({"Err": "test rejection"}).to_string()),
+            "test rejection",
+        ),
+        (
+            Some(json!({"Ok": "Handled"}).to_string()),
+            Some(json!({"Ok": {"FocusedWindow": null}}).to_string()),
+            "unexpected response",
+        ),
+        (
+            Some("not JSON".into()),
+            Some("not JSON".into()),
+            "failed to communicate with niri",
+        ),
+        (None, None, "failed to communicate with niri"),
+    ] {
+        let (output, requests) = close_window(&args, [query_reply]);
+        assert_error(&output, message);
+        assert_eq!(requests, [json!("FocusedWindow")]);
+
+        let (output, requests) =
+            close_window(&args, [Some(focused_window(42, None)), action_reply]);
+        assert_error(&output, message);
+        assert_eq!(
+            requests,
+            [
+                json!("FocusedWindow"),
+                json!({"Action": {"CloseWindow": {"id": 42}}}),
+            ]
+        );
+    }
 }
 
 #[test]

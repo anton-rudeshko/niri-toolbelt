@@ -35,10 +35,44 @@ binds {
 }
 ```
 
+### `close-window-unless`
+
+Close the focused window unless its `app_id` matches an exception. This protects
+selected applications from accidental closure through a niri keybinding.
+
+```
+close-window-unless [--] <app_id>...
+close-window-unless dota2
+close-window-unless dota2 org.example.Editor
+```
+
+Supply at least one exact, case-sensitive `app_id`; patterns and substrings do
+not match. Use `--` before IDs starting with `-`. No applications are built in.
+Run `close-window-unless --help` (or `-h`) for help without connecting to niri.
+Exit status is 0 for success or help, 2 for invalid arguments, and 1 for IPC
+errors, which are printed to stderr.
+
+If no window is focused, or its `app_id` matches any exception, nothing happens.
+A window without an `app_id` is not excluded. Otherwise, the utility sends
+`CloseWindow` with the ID returned by `FocusedWindow`, so a subsequent focus
+change cannot redirect the close request to another window.
+
+Replace the close binding in `config.kdl`, for example:
+
+```kdl
+binds {
+    Mod+Q { spawn "close-window-unless" "dota2"; }
+}
+```
+
+`dota2` is the verified Dota 2 `app_id`. This only protects this keybinding;
+other close bindings, application controls, and exit commands still work.
+
 ## Known issues
 
-- Multiple monitors are not supported: workspace indices are local to each
-  monitor, but the utility currently looks up an index across all monitors.
+- `focus-workspace-or-cycle`: multiple monitors are not supported. Workspace
+  indices are local to each monitor, but the utility currently looks up an
+  index across all monitors.
 
 ## TODO
 
